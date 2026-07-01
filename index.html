@@ -1,0 +1,655 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <title>東京ベイハウス 打刻</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%E2%8F%B0%3C/text%3E%3C/svg%3E">
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{
+      font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Sans','Yu Gothic',sans-serif;
+      background:#f5f6f8;color:#1f2937;padding:20px;min-height:100vh;
+    }
+    .wrap{max-width:720px;margin:0 auto}
+    body.admin-mode .wrap{max-width:1180px}
+    header{
+      background:#fff;border-radius:12px;padding:14px 20px;
+      display:flex;justify-content:space-between;align-items:center;
+      box-shadow:0 1px 3px rgba(0,0,0,.05);margin-bottom:16px;
+    }
+    .title{font-size:16px;font-weight:700;color:#0f172a}
+    .who{font-size:13px;color:#64748b}
+    .who strong{color:#0f172a;font-size:15px;margin-left:6px}
+    .card{
+      background:#fff;border-radius:12px;padding:24px;
+      box-shadow:0 1px 3px rgba(0,0,0,.05);margin-bottom:16px;
+    }
+    .clock{
+      font-size:52px;font-weight:700;text-align:center;color:#0f172a;
+      letter-spacing:2px;margin-bottom:4px;font-variant-numeric:tabular-nums;
+    }
+    .date{text-align:center;color:#64748b;margin-bottom:24px;font-size:14px}
+    .btn-row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+    .btn-punch{
+      padding:32px 0;font-size:26px;font-weight:700;border-radius:10px;
+      border:none;cursor:pointer;color:#fff;
+      transition:transform .05s,filter .1s;
+    }
+    .btn-punch:active{transform:scale(.98)}
+    .btn-in{background:#16a34a}
+    .btn-in:hover{filter:brightness(.95)}
+    .btn-out{background:#ea580c}
+    .btn-out:hover{filter:brightness(.95)}
+    .btn-punch:disabled{opacity:.5;cursor:not-allowed}
+    .leave-row{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}
+    .btn-leave{padding:14px 0;font-size:15px;font-weight:600;border-radius:8px;cursor:pointer}
+    .btn-leave-paid{border:1px solid #93c5fd;background:#dbeafe;color:#1e40af}
+    .btn-leave-paid:hover{background:#bfdbfe}
+    .btn-leave-special{border:1px solid #c4b5fd;background:#ede9fe;color:#5b21b6}
+    .btn-leave-special:hover{background:#ddd6fe}
+    .toast{
+      position:fixed;top:20px;left:50%;transform:translateX(-50%);
+      background:#0f172a;color:#fff;padding:14px 24px;border-radius:8px;
+      box-shadow:0 4px 12px rgba(0,0,0,.2);opacity:0;pointer-events:none;
+      transition:opacity .2s;z-index:100;font-size:15px;font-weight:600;
+    }
+    .toast.show{opacity:1}
+    .section-title{font-size:13px;color:#64748b;margin-bottom:10px;font-weight:600}
+    .stamp-list{list-style:none}
+    .stamp-item{
+      display:flex;align-items:center;gap:14px;padding:10px 0;
+      border-bottom:1px solid #f1f5f9;font-size:15px;
+    }
+    .stamp-item:last-child{border-bottom:none}
+    .stamp-time{font-variant-numeric:tabular-nums;font-weight:600;min-width:60px;font-size:16px}
+    .stamp-badge{
+      display:inline-block;padding:3px 12px;border-radius:4px;
+      font-size:13px;font-weight:600;
+    }
+    .badge-in{background:#dcfce7;color:#166534}
+    .badge-out{background:#fed7aa;color:#9a3412}
+    .empty{color:#9ca3af;font-size:14px;padding:16px 0;text-align:center}
+    .admin-link{
+      display:inline-block;margin-top:8px;color:#2563eb;
+      text-decoration:none;font-size:14px;
+    }
+    .admin-link:hover{text-decoration:underline}
+    .center{text-align:center}
+    .err{
+      background:#fef2f2;border:1px solid #fecaca;color:#991b1b;
+      padding:16px;border-radius:8px;text-align:center;font-size:14px;
+    }
+    .btn-small{
+      padding:6px 12px;border:1px solid #d1d5db;background:#fff;border-radius:6px;
+      font-size:13px;cursor:pointer;
+    }
+    .btn-small:hover{background:#f9fafb}
+    .btn-primary{background:#2563eb;color:#fff;border-color:#2563eb}
+    .btn-primary:hover{background:#1d4ed8}
+
+    /* === Admin Calendar === */
+    .cal-toolbar{display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap}
+    .cal-toolbar input[type=month]{padding:6px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:14px}
+    .cal-legend{display:flex;gap:10px;align-items:center;font-size:12px;color:#475569;flex-wrap:wrap}
+    .cal-legend .lg{display:inline-block;width:11px;height:11px;border-radius:2px;margin-right:3px;vertical-align:-1px}
+    .lg-in{background:#86efac}
+    .lg-paid{background:#93c5fd}
+    .lg-special{background:#c4b5fd}
+    .lg-absent{background:#fca5a5}
+
+    .sum-row{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+    .sum-card{background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:14px}
+    .sum-name{font-weight:700;font-size:16px;margin-bottom:10px;color:#0f172a}
+    .sum-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:4px}
+    .sum-stat{text-align:center;padding:6px 2px;border-radius:5px}
+    .sum-num{font-size:24px;font-weight:700;color:#0f172a;font-variant-numeric:tabular-nums;line-height:1}
+    .sum-num.sum-c-paid{color:#2563eb}
+    .sum-num.sum-c-special{color:#7c3aed}
+    .sum-num.sum-c-bal{color:#b45309}
+    .sum-lbl{font-size:11px;color:#64748b;margin-top:4px}
+    .sum-bal{background:#fef3c7;cursor:pointer}
+    .sum-bal:hover{background:#fde68a}
+
+    .cal-card{padding:14px}
+    .cal-dow{display:grid;grid-template-columns:repeat(7,1fr);background:#f9fafb;border-radius:6px 6px 0 0;border:1px solid #e2e8f0;border-bottom:none}
+    .cal-dow-cell{padding:6px;text-align:center;font-size:12px;color:#64748b;font-weight:600}
+    .dow-sun{color:#dc2626}
+    .dow-sat{color:#2563eb}
+
+    .cal-grid{display:grid;grid-template-columns:repeat(7,1fr);border-left:1px solid #e2e8f0;border-top:1px solid #e2e8f0;border-radius:0 0 6px 6px;overflow:hidden}
+    .cal-cell{
+      border-right:1px solid #e2e8f0;border-bottom:1px solid #e2e8f0;
+      min-height:108px;padding:4px 5px;cursor:pointer;background:#fff;
+      display:flex;flex-direction:column;gap:3px;position:relative;
+      transition:background .1s;
+    }
+    .cal-cell:hover{background:#f0f9ff}
+    .cal-cell.cell-blank{background:#f9fafb;cursor:default}
+    .cal-cell.cell-blank:hover{background:#f9fafb}
+    .cal-cell.cell-sat{background:#f0f9ff}
+    .cal-cell.cell-sat:hover{background:#dbeafe}
+    .cal-cell.cell-sun{background:#fef2f2}
+    .cal-cell.cell-sun:hover{background:#fee2e2}
+    .cal-cell.cell-today{outline:2px solid #2563eb;outline-offset:-2px;z-index:1}
+    .cell-holiday{background:#fef3f3 !important}
+    .cell-holiday:hover{background:#fee2e2 !important}
+    .cell-hname{font-size:10px;color:#dc2626;font-weight:600;line-height:1.1}
+    .cell-day{font-size:13px;font-weight:700;color:#475569;line-height:1}
+    .cell-day.day-sun{color:#dc2626}
+    .cell-day.day-sat{color:#2563eb}
+    .cell-stack{flex:1;display:flex;flex-direction:column;gap:2px}
+    .cell-row{display:flex;align-items:center;gap:4px;font-size:11px;line-height:1.2;padding:2px 5px;border-radius:3px}
+    .cell-name{font-weight:700;color:#475569;width:14px;flex-shrink:0}
+    .cell-stat{font-size:10px;font-weight:600}
+    .stat-in{background:#dcfce7;color:#166534}
+    .stat-ongoing{background:#fef9c3;color:#854d0e}
+    .stat-incomplete{background:#fef3c7;color:#92400e;border:1px dashed #f59e0b}
+    .stat-paid{background:#dbeafe;color:#1e40af}
+    .stat-special{background:#ede9fe;color:#5b21b6}
+    .stat-absent{background:#fee2e2;color:#991b1b}
+    .stat-none{color:#cbd5e1;background:transparent}
+
+    .modal-bg{position:fixed;inset:0;background:rgba(15,23,42,.55);display:flex;align-items:center;justify-content:center;z-index:50}
+    .modal-box{background:#fff;border-radius:12px;padding:22px;max-width:520px;width:92%;box-shadow:0 20px 50px rgba(0,0,0,.3)}
+    .modal-title{font-size:17px;font-weight:700;margin-bottom:14px;color:#0f172a}
+    .modal-body{display:flex;flex-direction:column;gap:4px;margin-bottom:16px}
+    .modal-row{display:flex;align-items:center;gap:6px;padding:10px 0;border-bottom:1px solid #f1f5f9;flex-wrap:wrap}
+    .modal-row:last-child{border-bottom:none}
+    .modal-name{font-weight:700;min-width:50px;font-size:14px;color:#0f172a}
+    .modal-foot{display:flex;justify-content:flex-end;gap:8px}
+    .punches-line{font-size:11px;color:#64748b;width:100%;margin-top:4px;padding-left:56px}
+  </style>
+</head>
+<body>
+  <div class="wrap" id="app">
+    <div class="card"><div class="empty">読み込み中...</div></div>
+  </div>
+  <div class="toast" id="toast"></div>
+
+  <script>
+    // === API 設定 ===
+    // GAS Web App /exec の URL。GAS 側で doPost を新規追加したため、
+    // 一度「デプロイ管理→鉛筆→新バージョン→デプロイ」が必要（URL は不変）。
+    const API_URL = 'https://script.google.com/macros/s/AKfycbwVNxpmfnb_I9sDD6LaQTy3ctt4p3N2yUPlB3H1YImUAboSbCx9SHFCbF48zI_4ZJzPfw/exec';
+
+    // URL パラメータから ?u=koto|eri|watanabe|admin を取得
+    const USER_KEY = (new URLSearchParams(location.search).get('u') || '').toLowerCase();
+
+    let ME = null;
+    let TICK = null;
+    let CAL_DATA = null;
+
+    // === API 呼び出し ===
+    // 【CORS 対策】Content-Type: text/plain で送ることで preflight OPTIONS を回避。
+    // application/json だとブラウザが preflight を投げ、GAS は OPTIONS に応えられず失敗する。
+    // 内見予約フォーム bayhouse-yoyaku で実証済の bayhouse 標準パターン。
+    async function apiCall(action, params) {
+      const body = Object.assign({ action, u: USER_KEY }, params || {});
+      const res = await fetch(API_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify(body),
+        redirect: 'follow'
+      });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const json = await res.json();
+      if (json && json.error) throw new Error(json.error);
+      return json;
+    }
+
+    // 端末ID（初回に localStorage へ生成保存・以降は同じ）
+    function getDeviceId() {
+      let id = localStorage.getItem('dakoku_device_id');
+      if (!id) {
+        id = 'dev-' + ((window.crypto && crypto.randomUUID) ? crypto.randomUUID() : (Math.random().toString(36).slice(2) + Date.now().toString(36)));
+        try { localStorage.setItem('dakoku_device_id', id); } catch (e) {}
+      }
+      return id;
+    }
+    // ブラウザ/OS/解像度の署名（例: "Mac/Chrome (1440x900)"）
+    function getUASig() {
+      const ua = navigator.userAgent || '';
+      let os = 'Unknown';
+      if (ua.indexOf('Mac') >= 0) os = 'Mac';
+      else if (ua.indexOf('Windows') >= 0) os = 'Win';
+      else if (ua.indexOf('iPhone') >= 0) os = 'iPhone';
+      else if (ua.indexOf('iPad') >= 0) os = 'iPad';
+      else if (ua.indexOf('Android') >= 0) os = 'Android';
+      let br = 'Unknown';
+      if (ua.indexOf('Edg/') >= 0) br = 'Edge';
+      else if (ua.indexOf('Chrome') >= 0) br = 'Chrome';
+      else if (ua.indexOf('Firefox') >= 0) br = 'Firefox';
+      else if (ua.indexOf('Safari') >= 0) br = 'Safari';
+      return os + '/' + br + ' (' + screen.width + 'x' + screen.height + ')';
+    }
+
+    function el(tag, attrs) {
+      const e = document.createElement(tag);
+      if (attrs) {
+        for (const k in attrs) {
+          if (k === 'class') e.className = attrs[k];
+          else if (k.indexOf('on') === 0 && typeof attrs[k] === 'function') e.addEventListener(k.slice(2), attrs[k]);
+          else if (attrs[k] != null) e.setAttribute(k, attrs[k]);
+        }
+      }
+      for (let i = 2; i < arguments.length; i++) {
+        const c = arguments[i];
+        if (c == null || c === false) continue;
+        e.appendChild(typeof c === 'object' ? c : document.createTextNode(String(c)));
+      }
+      return e;
+    }
+    function pad(n) { return String(n).padStart(2, '0'); }
+    function fmtClock(d) { return d.getHours() + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds()); }
+    function fmtDate(d) {
+      const days = ['日', '月', '火', '水', '木', '金', '土'];
+      return d.getFullYear() + '年' + (d.getMonth() + 1) + '月' + d.getDate() + '日(' + days[d.getDay()] + ')';
+    }
+    function toast(msg) {
+      const t = document.getElementById('toast');
+      t.textContent = msg;
+      t.classList.add('show');
+      setTimeout(function () { t.classList.remove('show'); }, 2500);
+    }
+
+    async function renderApp() {
+      try {
+        const me = await apiCall('getMe');
+        ME = me;
+        if (!me.ok) return renderUnauthorized(me.key);
+        renderMember();
+      } catch (err) {
+        renderError(err.message);
+      }
+    }
+
+    function renderUnauthorized(key) {
+      const app = document.getElementById('app');
+      app.innerHTML = '';
+      app.appendChild(el('div', { class: 'card' },
+        el('div', { class: 'err' },
+          'URLパラメータ ?u= が指定されていないか、不正です。',
+          el('br'),
+          '寺島さんに正しい URL を確認してください。',
+          key ? el('div', { style: 'font-size:12px;color:#64748b;margin-top:8px' }, '受信キー: ' + key) : null
+        )
+      ));
+    }
+    function renderError(msg) {
+      const app = document.getElementById('app');
+      app.innerHTML = '';
+      app.appendChild(el('div', { class: 'card' }, el('div', { class: 'err' }, 'エラー: ' + msg)));
+    }
+
+    // === 社員画面 ===
+    function renderMember() {
+      const app = document.getElementById('app');
+      app.innerHTML = '';
+      document.body.classList.remove('admin-mode');
+
+      app.appendChild(el('header', null,
+        el('div', { class: 'title' }, '東京ベイハウス 打刻'),
+        el('div', { class: 'who' }, 'ようこそ', el('strong', null, ME.name + 'さん'))
+      ));
+
+      const now = new Date();
+      app.appendChild(el('div', { class: 'card' },
+        el('div', { class: 'clock', id: 'clock' }, fmtClock(now)),
+        el('div', { class: 'date' }, fmtDate(now)),
+        el('div', { class: 'btn-row' },
+          el('button', { class: 'btn-punch btn-in', id: 'btnIn', onclick: function () { doPunch('出勤'); } }, '出勤'),
+          el('button', { class: 'btn-punch btn-out', id: 'btnOut', onclick: function () { doPunch('退勤'); } }, '退勤')
+        ),
+        el('div', { class: 'leave-row' },
+          el('button', { class: 'btn-leave btn-leave-paid', onclick: function () { openLeaveModal('有給'); } }, '有給を申請'),
+          el('button', { class: 'btn-leave btn-leave-special', onclick: function () { openLeaveModal('特休'); } }, '特別休暇を申請')
+        )
+      ));
+
+      if (TICK) clearInterval(TICK);
+      TICK = setInterval(function () {
+        const c = document.getElementById('clock');
+        if (c) c.textContent = fmtClock(new Date());
+      }, 1000);
+
+      app.appendChild(el('div', { class: 'card' },
+        el('div', { class: 'section-title' }, '本日の打刻'),
+        el('ul', { class: 'stamp-list', id: 'stampList' },
+          el('li', { class: 'empty' }, '読み込み中...')
+        )
+      ));
+      loadMyToday();
+
+      if (ME.role === 'admin') {
+        app.appendChild(el('div', { class: 'center' },
+          el('a', { class: 'admin-link', href: '#admin', onclick: function (e) { e.preventDefault(); renderAdmin(); } }, '管理画面を開く →')
+        ));
+      }
+    }
+
+    async function loadMyToday() {
+      try {
+        const res = await apiCall('getMyToday');
+        const list = document.getElementById('stampList');
+        if (!list) return;
+        list.innerHTML = '';
+        if (!res || !res.ok || !res.records || res.records.length === 0) {
+          list.appendChild(el('li', { class: 'empty' }, 'まだ打刻がありません'));
+          return;
+        }
+        res.records.sort(function (a, b) { return a.time - b.time; });
+        for (const r of res.records) {
+          list.appendChild(el('li', { class: 'stamp-item' },
+            el('span', { class: 'stamp-time' }, r.timeText),
+            el('span', { class: 'stamp-badge ' + (r.type === '出勤' ? 'badge-in' : 'badge-out') }, r.type)
+          ));
+        }
+      } catch (err) {
+        console.error(err);
+      }
+    }
+
+    async function doPunch(type) {
+      const btnIn = document.getElementById('btnIn');
+      const btnOut = document.getElementById('btnOut');
+      btnIn.disabled = true; btnOut.disabled = true;
+      try {
+        const res = await apiCall('punch', {
+          type: type,
+          deviceId: getDeviceId(),
+          uaSig: getUASig()
+        });
+        toast(res.timeText + ' ' + res.type + 'を記録しました');
+        loadMyToday();
+      } catch (err) {
+        toast('エラー: ' + err.message);
+      } finally {
+        btnIn.disabled = false; btnOut.disabled = false;
+      }
+    }
+
+    function openLeaveModal(type) {
+      let modal = document.getElementById('leaveModal');
+      if (modal) modal.remove();
+      const t = new Date();
+      const isoToday = t.getFullYear() + '-' + pad(t.getMonth() + 1) + '-' + pad(t.getDate());
+      const dateInput = el('input', { type: 'date', value: isoToday, style: 'padding:8px;font-size:15px;border:1px solid #d1d5db;border-radius:6px;width:100%' });
+      const submitBtn = el('button', {
+        class: 'btn-small btn-primary', style: 'padding:10px 24px;font-size:14px',
+        onclick: function () { submitLeave(type, dateInput.value); }
+      }, '申請する');
+      const cancelBtn = el('button', {
+        class: 'btn-small', style: 'padding:10px 18px;font-size:14px',
+        onclick: function () { modal.remove(); }
+      }, 'キャンセル');
+      modal = el('div', {
+        id: 'leaveModal', class: 'modal-bg',
+        onclick: function (e) { if (e.target === modal) modal.remove(); }
+      },
+        el('div', { class: 'modal-box' },
+          el('div', { class: 'modal-title' }, type + 'を申請'),
+          el('div', { style: 'font-size:13px;color:#64748b;margin-bottom:12px' },
+            '休む日を選んで「申請する」を押してください。'),
+          el('div', { style: 'margin-bottom:8px;font-size:13px;color:#374151;font-weight:600' }, '対象日'),
+          dateInput,
+          el('div', { style: 'font-size:11px;color:#64748b;margin-top:10px;line-height:1.5' },
+            '※ 申請後、社内カレンダーに自動反映され、寺島さんに通知メールが届きます。',
+            el('br'),
+            '※ 大型連休（夏休み・年末年始・GW）時は各2日ずつ付与されます。'),
+          el('div', { class: 'modal-foot', style: 'margin-top:18px' },
+            cancelBtn, submitBtn)
+        )
+      );
+      document.body.appendChild(modal);
+    }
+
+    async function submitLeave(type, dateStr) {
+      if (!dateStr) { toast('日付を選んでください'); return; }
+      try {
+        const res = await apiCall('requestLeave', { type: type, dateStr: dateStr });
+        const m = document.getElementById('leaveModal');
+        if (m) m.remove();
+        toast(res.dateStr + ' の' + res.type + 'を申請しました');
+      } catch (err) {
+        toast('エラー: ' + err.message);
+      }
+    }
+
+    // === 管理カレンダー画面 ===
+    function renderAdmin() {
+      const app = document.getElementById('app');
+      app.innerHTML = '';
+      if (TICK) { clearInterval(TICK); TICK = null; }
+      document.body.classList.add('admin-mode');
+
+      app.appendChild(el('header', null,
+        el('div', { class: 'title' }, '打刻 管理画面'),
+        el('a', { href: '#member', class: 'admin-link', style: 'margin:0', onclick: function (e) { e.preventDefault(); document.body.classList.remove('admin-mode'); renderMember(); } }, '← 自分の打刻に戻る')
+      ));
+
+      const now = new Date();
+      const thisYm = now.getFullYear() + '-' + pad(now.getMonth() + 1);
+
+      const ymInput = el('input', { type: 'month', id: 'ymPicker', value: thisYm });
+      ymInput.addEventListener('change', loadAdminCalendar);
+
+      app.appendChild(el('div', { class: 'card', id: 'summaryCard' },
+        el('div', { class: 'cal-toolbar' },
+          el('button', { class: 'btn-small', onclick: function () { shiftMonth(-1); } }, '◀'),
+          ymInput,
+          el('button', { class: 'btn-small', onclick: function () { shiftMonth(1); } }, '▶'),
+          el('span', { style: 'flex:1' }),
+          el('span', { class: 'cal-legend' },
+            el('span', null, el('span', { class: 'lg lg-in' }), '出勤'),
+            el('span', null, el('span', { class: 'lg lg-paid' }), '有給'),
+            el('span', null, el('span', { class: 'lg lg-special' }), '特休'),
+            el('span', null, el('span', { class: 'lg lg-absent' }), '欠勤')
+          )
+        ),
+        el('div', { class: 'sum-row', id: 'sumRow' },
+          el('div', { class: 'empty' }, '読み込み中...')
+        )
+      ));
+
+      app.appendChild(el('div', { class: 'card cal-card' },
+        el('div', { id: 'calBody' },
+          el('div', { class: 'empty' }, '読み込み中...')
+        )
+      ));
+
+      loadAdminCalendar();
+    }
+
+    function shiftMonth(delta) {
+      const ym = document.getElementById('ymPicker').value;
+      const y = Number(ym.substring(0, 4));
+      const m = Number(ym.substring(5, 7));
+      const d = new Date(y, m - 1 + delta, 1);
+      document.getElementById('ymPicker').value = d.getFullYear() + '-' + pad(d.getMonth() + 1);
+      loadAdminCalendar();
+    }
+
+    async function loadAdminCalendar() {
+      const ym = document.getElementById('ymPicker').value;
+      try {
+        const data = await apiCall('getCalendarMonth', { yearMonth: ym });
+        CAL_DATA = data;
+        renderCalendar(data);
+      } catch (err) {
+        toast('エラー: ' + err.message);
+      }
+    }
+
+    function statusClass(s) {
+      if (s === '出勤') return 'in';
+      if (s === '出勤中') return 'ongoing';
+      if (s === '未完了') return 'incomplete';
+      if (s === '有給') return 'paid';
+      if (s === '特休') return 'special';
+      if (s === '欠勤') return 'absent';
+      return 'none';
+    }
+    function statusLabel(s) { return s || '・'; }
+
+    function renderCalendar(data) {
+      const sumRow = document.getElementById('sumRow');
+      sumRow.innerHTML = '';
+      for (const m of data.members) {
+        const balCell = el('div', {
+          class: 'sum-stat sum-bal', title: 'クリックして残日数を編集',
+          onclick: (function (em, cur, nm) { return function () { promptBalance(em, cur, nm); }; })(m.email, m.balance, m.name)
+        },
+          el('div', { class: 'sum-num sum-c-bal' }, String(m.balance)),
+          el('div', { class: 'sum-lbl' }, '有給残')
+        );
+        const card = el('div', { class: 'sum-card' },
+          el('div', { class: 'sum-name' }, m.name,
+            (m.incomplete > 0
+              ? el('span', { style: 'font-size:11px;color:#d97706;margin-left:8px;background:#fef3c7;padding:2px 6px;border-radius:3px;font-weight:600' }, '未完了' + m.incomplete + '日')
+              : null)
+          ),
+          el('div', { class: 'sum-stats' },
+            el('div', { class: 'sum-stat' },
+              el('div', { class: 'sum-num' }, String(m.workdays)),
+              el('div', { class: 'sum-lbl' }, '出勤')
+            ),
+            el('div', { class: 'sum-stat' },
+              el('div', { class: 'sum-num sum-c-paid' }, String(m.paid)),
+              el('div', { class: 'sum-lbl' }, '有給')
+            ),
+            el('div', { class: 'sum-stat' },
+              el('div', { class: 'sum-num sum-c-special' }, String(m.special)),
+              el('div', { class: 'sum-lbl' }, '特休')
+            ),
+            balCell
+          )
+        );
+        sumRow.appendChild(card);
+      }
+
+      const calBody = document.getElementById('calBody');
+      calBody.innerHTML = '';
+      const dowHead = el('div', { class: 'cal-dow' });
+      const dows = ['日', '月', '火', '水', '木', '金', '土'];
+      for (let i = 0; i < 7; i++) {
+        const cls = 'cal-dow-cell' + (i === 0 ? ' dow-sun' : '') + (i === 6 ? ' dow-sat' : '');
+        dowHead.appendChild(el('div', { class: cls }, dows[i]));
+      }
+      calBody.appendChild(dowHead);
+
+      const grid = el('div', { class: 'cal-grid' });
+      for (const c of data.cells) {
+        if (c.blank) {
+          grid.appendChild(el('div', { class: 'cal-cell cell-blank' }));
+          continue;
+        }
+        const cls = 'cal-cell'
+          + (c.isToday ? ' cell-today' : '')
+          + (c.dow === 0 ? ' cell-sun' : '')
+          + (c.dow === 6 ? ' cell-sat' : '')
+          + (c.holiday ? ' cell-holiday' : '');
+        const dayHead = el('div', { style: 'display:flex;justify-content:space-between;align-items:flex-start;gap:4px' },
+          c.holiday ? el('span', { class: 'cell-hname', title: c.holiday }, c.holiday) : el('span'),
+          el('span', { class: 'cell-day' + (c.dow === 0 || c.holiday ? ' day-sun' : '') + (c.dow === 6 ? ' day-sat' : '') }, String(c.day))
+        );
+        const cell = el('div', {
+          class: cls, 'data-date': c.dateStr,
+          onclick: (function (ds) { return function () { openDayEditor(ds); }; })(c.dateStr)
+        },
+          dayHead
+        );
+        const stack = el('div', { class: 'cell-stack' });
+        for (const m of data.members) {
+          const st = c.statuses[m.email];
+          stack.appendChild(el('div', { class: 'cell-row stat-' + statusClass(st) },
+            el('span', { class: 'cell-name' }, m.name.charAt(0)),
+            el('span', { class: 'cell-stat' }, statusLabel(st))
+          ));
+        }
+        cell.appendChild(stack);
+        grid.appendChild(cell);
+      }
+      calBody.appendChild(grid);
+    }
+
+    function openDayEditor(dateStr) {
+      if (!CAL_DATA) return;
+      const cell = CAL_DATA.cells.find(function (c) { return !c.blank && c.dateStr === dateStr; });
+      if (!cell) return;
+
+      let modal = document.getElementById('dayModal');
+      if (modal) modal.remove();
+
+      const body = el('div', { class: 'modal-body', id: 'modalBody' });
+      for (const m of CAL_DATA.members) {
+        const cur = cell.statuses[m.email] || '';
+        const row = el('div', { class: 'modal-row' },
+          el('span', { class: 'modal-name' }, m.name)
+        );
+        const opts = ['出勤', '有給', '特休', '欠勤'];
+        for (const opt of opts) {
+          const active = cur === opt;
+          row.appendChild(el('button', {
+            class: 'btn-small' + (active ? ' btn-primary' : ''),
+            onclick: (function (em, ds, st) { return function () { setDayStatusUI(em, ds, st); }; })(m.email, dateStr, opt)
+          }, opt));
+        }
+        row.appendChild(el('button', {
+          class: 'btn-small',
+          onclick: (function (em, ds) { return function () { setDayStatusUI(em, ds, ''); }; })(m.email, dateStr)
+        }, 'クリア'));
+
+        const punches = cell.punches[m.email] || [];
+        if (punches.length > 0) {
+          const line = punches.map(function (p) { return p.type + ' ' + p.time; }).join(' / ');
+          row.appendChild(el('div', { class: 'punches-line' }, '打刻: ' + line));
+        }
+        body.appendChild(row);
+      }
+
+      modal = el('div', {
+        id: 'dayModal', class: 'modal-bg',
+        onclick: function (e) { if (e.target === modal) modal.remove(); }
+      },
+        el('div', { class: 'modal-box' },
+          el('div', { class: 'modal-title' }, dateStr + ' のステータス'),
+          body,
+          el('div', { class: 'modal-foot' },
+            el('button', { class: 'btn-small', onclick: function () { modal.remove(); } }, '閉じる')
+          )
+        )
+      );
+      document.body.appendChild(modal);
+    }
+
+    async function setDayStatusUI(email, dateStr, status) {
+      try {
+        await apiCall('setDayStatus', { email: email, dateStr: dateStr, status: status });
+        toast('保存しました');
+        const m = document.getElementById('dayModal');
+        if (m) m.remove();
+        loadAdminCalendar();
+      } catch (err) {
+        toast('エラー: ' + err.message);
+      }
+    }
+
+    async function promptBalance(email, current, name) {
+      const v = prompt(name + 'さんの有給残日数（日）', String(current));
+      if (v === null) return;
+      const n = Number(v);
+      if (isNaN(n) || n < 0) { toast('数値を入れてください'); return; }
+      try {
+        await apiCall('setBalance', { email: email, days: Math.floor(n) });
+        toast(name + 'さん 有給残' + Math.floor(n) + '日に設定');
+        loadAdminCalendar();
+      } catch (err) {
+        toast('エラー: ' + err.message);
+      }
+    }
+
+    renderApp();
+  </script>
+</body>
+</html>
