@@ -111,6 +111,27 @@
     .sum-bal{background:#fef3c7;cursor:pointer}
     .sum-bal:hover{background:#fde68a}
 
+    /* 社員画面: 有給残・特休残（ヘッダー右「ようこそ 古東さん」の右横に控えめに併記） */
+    .balance-row{display:inline-flex;align-items:baseline;gap:10px;margin-left:14px;font-size:11px;color:#94a3b8}
+    .balance-cell{background:transparent;border:none;padding:0;display:inline-flex;gap:4px;align-items:baseline}
+    .balance-label{color:#94a3b8;font-weight:400}
+    .balance-num{font-size:12px;font-weight:600;color:#64748b;font-variant-numeric:tabular-nums}
+    .balance-row .divider{color:#cbd5e1}
+
+    /* 管理画面: 残管理エリア（増減ボタン） */
+    .balance-manage{margin-top:10px;border-top:1px dashed #e2e8f0;padding-top:8px;display:flex;flex-direction:column;gap:6px}
+    .balance-mng-row{display:flex;align-items:center;gap:8px;font-size:12px}
+    .balance-mng-label{color:#64748b;min-width:44px;font-weight:600}
+    .balance-mng-num{font-weight:700;color:#b45309;min-width:36px;cursor:pointer;font-size:15px;font-variant-numeric:tabular-nums}
+    .balance-mng-num.special{color:#7c3aed}
+    .balance-mng-num:hover{background:#fef3c7;border-radius:3px;padding:0 4px}
+    .balance-mng-num.special:hover{background:#ede9fe}
+    .sum-adj{display:flex;gap:3px;margin-left:auto}
+    .sum-adj button{padding:2px 8px;font-size:11px;border:1px solid #cbd5e1;background:#fff;border-radius:3px;cursor:pointer;font-weight:600;color:#334155}
+    .sum-adj button:hover{background:#f1f5f9}
+    .sum-adj button.plus{color:#16a34a;border-color:#86efac}
+    .sum-adj button.minus{color:#dc2626;border-color:#fca5a5}
+
     .cal-card{padding:14px}
     .cal-dow{display:grid;grid-template-columns:repeat(7,1fr);background:#f9fafb;border-radius:6px 6px 0 0;border:1px solid #e2e8f0;border-bottom:none}
     .cal-dow-cell{padding:6px;text-align:center;font-size:12px;color:#64748b;font-weight:600}
@@ -290,7 +311,20 @@
 
       app.appendChild(el('header', null,
         el('div', { class: 'title' }, '東京ベイハウス 打刻'),
-        el('div', { class: 'who' }, 'ようこそ', el('strong', null, ME.name + 'さん'))
+        el('div', { class: 'who' },
+          'ようこそ', el('strong', null, ME.name + 'さん'),
+          el('span', { class: 'balance-row', id: 'balanceRow' },
+            el('span', { class: 'balance-cell' },
+              el('span', { class: 'balance-label' }, '有給残'),
+              el('span', { class: 'balance-num', id: 'balPaid' }, '-')
+            ),
+            el('span', { class: 'divider' }, '／'),
+            el('span', { class: 'balance-cell special' },
+              el('span', { class: 'balance-label' }, '特休残'),
+              el('span', { class: 'balance-num', id: 'balSpecial' }, '-')
+            )
+          )
+        )
       ));
 
       const now = new Date();
@@ -320,12 +354,24 @@
         )
       ));
       loadMyToday();
+      loadBalance();
 
       if (ME.role === 'admin') {
         app.appendChild(el('div', { class: 'center' },
           el('a', { class: 'admin-link', href: '#admin', onclick: function (e) { e.preventDefault(); renderAdmin(); } }, '管理画面を開く →')
         ));
       }
+    }
+
+    async function loadBalance() {
+      try {
+        const b = await apiCall('getMyBalance');
+        if (!b || !b.ok) return;
+        const p = document.getElementById('balPaid');
+        const s = document.getElementById('balSpecial');
+        if (p) p.textContent = String(b.paid) + '日';
+        if (s) s.textContent = String(b.special) + '日';
+      } catch (err) { console.error(err); }
     }
 
     async function loadMyToday() {
@@ -396,7 +442,7 @@
           el('div', { style: 'font-size:11px;color:#64748b;margin-top:10px;line-height:1.5' },
             '※ 申請後、社内カレンダーに自動反映され、寺島さんに通知メールが届きます。',
             el('br'),
-            '※ 大型連休（夏休み・年末年始・GW）時は各2日ずつ付与されます。'),
+            '※ 大型連休（夏休み・年末年始・GW）分は残日数から既に相殺済みです。'),
           el('div', { class: 'modal-foot', style: 'margin-top:18px' },
             cancelBtn, submitBtn)
         )
@@ -496,20 +542,26 @@
       const sumRow = document.getElementById('sumRow');
       sumRow.innerHTML = '';
       for (const m of data.members) {
-        const balCell = el('div', {
-          class: 'sum-stat sum-bal', title: 'クリックして残日数を編集',
-          onclick: (function (em, cur, nm) { return function () { promptBalance(em, cur, nm); }; })(m.email, m.balance, m.name)
-        },
-          el('div', { class: 'sum-num sum-c-bal' }, String(m.balance)),
-          el('div', { class: 'sum-lbl' }, '有給残')
-        );
+        const mkAdj = function(target){
+          return el('span', { class: 'sum-adj' },
+            el('button', { class: 'minus',
+              onclick: (function(em,nm,t){return function(){adjustBalanceUI(em,t,-1,nm);};})(m.email,m.name,target)
+            }, '−1'),
+            el('button', { class: 'plus',
+              onclick: (function(em,nm,t){return function(){adjustBalanceUI(em,t,+1,nm);};})(m.email,m.name,target)
+            }, '+1'),
+            el('button', { class: 'plus',
+              onclick: (function(em,nm,t){return function(){adjustBalanceUI(em,t,+2,nm);};})(m.email,m.name,target)
+            }, '+2')
+          );
+        };
         const card = el('div', { class: 'sum-card' },
           el('div', { class: 'sum-name' }, m.name,
             (m.incomplete > 0
               ? el('span', { style: 'font-size:11px;color:#d97706;margin-left:8px;background:#fef3c7;padding:2px 6px;border-radius:3px;font-weight:600' }, '未完了' + m.incomplete + '日')
               : null)
           ),
-          el('div', { class: 'sum-stats' },
+          el('div', { class: 'sum-stats', style: 'grid-template-columns:repeat(3,1fr)' },
             el('div', { class: 'sum-stat' },
               el('div', { class: 'sum-num' }, String(m.workdays)),
               el('div', { class: 'sum-lbl' }, '出勤')
@@ -521,8 +573,27 @@
             el('div', { class: 'sum-stat' },
               el('div', { class: 'sum-num sum-c-special' }, String(m.special)),
               el('div', { class: 'sum-lbl' }, '特休')
+            )
+          ),
+          el('div', { class: 'balance-manage' },
+            el('div', { class: 'balance-mng-row' },
+              el('span', { class: 'balance-mng-label' }, '有給残'),
+              el('span', {
+                class: 'balance-mng-num',
+                title: 'クリックして絶対値を入力',
+                onclick: (function(em,cur,nm){return function(){promptBalance(em,cur,nm,'paid');};})(m.email,m.balance,m.name)
+              }, String(m.balance)),
+              mkAdj('paid')
             ),
-            balCell
+            el('div', { class: 'balance-mng-row' },
+              el('span', { class: 'balance-mng-label' }, '特休残'),
+              el('span', {
+                class: 'balance-mng-num special',
+                title: 'クリックして絶対値を入力',
+                onclick: (function(em,cur,nm){return function(){promptBalance(em,cur,nm,'special');};})(m.email, (m.specialBalance || 0), m.name)
+              }, String(m.specialBalance || 0)),
+              mkAdj('special')
+            )
           )
         );
         sumRow.appendChild(card);
@@ -635,14 +706,27 @@
       }
     }
 
-    async function promptBalance(email, current, name) {
-      const v = prompt(name + 'さんの有給残日数（日）', String(current));
+    async function promptBalance(email, current, name, target) {
+      const t = target === 'special' ? 'special' : 'paid';
+      const label = t === 'special' ? '特休' : '有給';
+      const v = prompt(name + 'さんの' + label + '残日数（日・マイナス可）', String(current));
       if (v === null) return;
       const n = Number(v);
-      if (isNaN(n) || n < 0) { toast('数値を入れてください'); return; }
+      if (isNaN(n)) { toast('数値を入れてください'); return; }
       try {
-        await apiCall('setBalance', { email: email, days: Math.floor(n) });
-        toast(name + 'さん 有給残' + Math.floor(n) + '日に設定');
+        await apiCall('setBalance', { email: email, days: Math.floor(n), target: t });
+        toast(name + 'さん ' + label + '残' + Math.floor(n) + '日に設定');
+        loadAdminCalendar();
+      } catch (err) {
+        toast('エラー: ' + err.message);
+      }
+    }
+
+    async function adjustBalanceUI(email, target, delta, name) {
+      const label = target === 'special' ? '特休' : '有給';
+      try {
+        const res = await apiCall('setBalanceDelta', { email: email, target: target, delta: delta });
+        toast(name + 'さん ' + label + '残: ' + res.before + '日 → ' + res.after + '日');
         loadAdminCalendar();
       } catch (err) {
         toast('エラー: ' + err.message);
