@@ -200,6 +200,7 @@
     let ME = null;
     let TICK = null;
     let CAL_DATA = null;
+    let DEVICE_STATUS = null; // 'approved' | 'pending' | 'none'（社員画面の端末制限用）
 
     // === API 呼び出し ===
     // 【CORS 対策】Content-Type: text/plain で送ることで preflight OPTIONS を回避。
@@ -355,6 +356,7 @@
       ));
       loadMyToday();
       loadBalance();
+      checkDeviceGate();
 
       if (ME.role === 'admin') {
         app.appendChild(el('div', { class: 'center' },
@@ -372,6 +374,83 @@
         if (p) p.textContent = String(b.paid) + '日';
         if (s) s.textContent = String(b.special) + '日';
       } catch (err) { console.error(err); }
+    }
+
+    // === 端末制限（社員画面）===
+    // admin は免除。member はこの端末が承認済みでなければ打刻・申請ボタンを無効化し、
+    // 未登録なら「この端末を登録申請」ボタンを出す。
+    async function checkDeviceGate() {
+      if (!ME || ME.role === 'admin') { DEVICE_STATUS = 'approved'; return; }
+      try {
+        const r = await apiCall('getDeviceStatus', { deviceId: getDeviceId() });
+        DEVICE_STATUS = (r && r.status) || 'none';
+      } catch (e) {
+        DEVICE_STATUS = 'none';
+      }
+      applyDeviceGate();
+    }
+
+    function setActionsEnabled(enabled) {
+      ['btnIn', 'btnOut'].forEach(function (id) {
+        const b = document.getElementById(id);
+        if (b) b.disabled = !enabled;
+      });
+      document.querySelectorAll('.btn-leave').forEach(function (b) {
+        b.disabled = !enabled;
+        b.style.opacity = enabled ? '' : '0.45';
+        b.style.cursor = enabled ? '' : 'not-allowed';
+      });
+    }
+
+    function applyDeviceGate() {
+      const oldGate = document.getElementById('deviceGate');
+      if (oldGate) oldGate.remove();
+      if (DEVICE_STATUS === 'approved') { setActionsEnabled(true); return; }
+      setActionsEnabled(false);
+      const app = document.getElementById('app');
+      let banner;
+      if (DEVICE_STATUS === 'pending') {
+        banner = el('div', { class: 'card', id: 'deviceGate', style: 'border:1px solid #fcd34d;background:#fffbeb' },
+          el('div', { style: 'font-weight:700;color:#92400e;margin-bottom:6px' }, 'この端末は承認待ちです'),
+          el('div', { style: 'font-size:13px;color:#78350f;line-height:1.6' },
+            '寺島さんが承認すると、この端末で打刻・申請ができるようになります。しばらくお待ちください。')
+        );
+      } else {
+        banner = el('div', { class: 'card', id: 'deviceGate', style: 'border:1px solid #fca5a5;background:#fef2f2' },
+          el('div', { style: 'font-weight:700;color:#991b1b;margin-bottom:6px' }, 'この端末は未登録です'),
+          el('div', { style: 'font-size:13px;color:#7f1d1d;line-height:1.6;margin-bottom:12px' },
+            '打刻・休暇申請には、この端末の登録が必要です。下のボタンで申請すると、寺島さんの承認後に使えるようになります。'),
+          el('button', { class: 'btn-small btn-primary', id: 'btnRegDev', style: 'padding:10px 20px;font-size:14px', onclick: registerThisDevice }, 'この端末を登録申請')
+        );
+      }
+      const header = app.querySelector('header');
+      if (header && header.nextSibling) app.insertBefore(banner, header.nextSibling);
+      else app.insertBefore(banner, app.firstChild);
+    }
+
+    async function registerThisDevice() {
+      const btn = document.getElementById('btnRegDev');
+      if (btn) btn.disabled = true;
+      try {
+        await apiCall('registerDevice', {
+          deviceId: getDeviceId(),
+          uaSig: getUASig(),
+          label: ME.name + ' / ' + getUASig()
+        });
+        DEVICE_STATUS = 'pending';
+        applyDeviceGate();
+        toast('登録申請しました。承認をお待ちください');
+      } catch (err) {
+        toast('エラー: ' + err.message);
+        if (btn) btn.disabled = false;
+      }
+    }
+
+    function friendlyErr(msg) {
+      if (msg && msg.indexOf('DEVICE_NOT_APPROVED') >= 0) {
+        return 'この端末は未登録です。承認をお待ちください。';
+      }
+      return msg;
     }
 
     async function loadMyToday() {
@@ -409,7 +488,8 @@
         toast(res.timeText + ' ' + res.type + 'を記録しました');
         loadMyToday();
       } catch (err) {
-        toast('エラー: ' + err.message);
+        toast('エラー: ' + friendlyErr(err.message));
+        if (err.message && err.message.indexOf('DEVICE_NOT_APPROVED') >= 0) checkDeviceGate();
       } finally {
         btnIn.disabled = false; btnOut.disabled = false;
       }
@@ -453,12 +533,13 @@
     async function submitLeave(type, dateStr) {
       if (!dateStr) { toast('日付を選んでください'); return; }
       try {
-        const res = await apiCall('requestLeave', { type: type, dateStr: dateStr });
+        const res = await apiCall('requestLeave', { type: type, dateStr: dateStr, deviceId: getDeviceId() });
         const m = document.getElementById('leaveModal');
         if (m) m.remove();
         toast(res.dateStr + ' の' + res.type + 'を申請しました');
       } catch (err) {
-        toast('エラー: ' + err.message);
+        toast('エラー: ' + friendlyErr(err.message));
+        if (err.message && err.message.indexOf('DEVICE_NOT_APPROVED') >= 0) checkDeviceGate();
       }
     }
 
@@ -504,7 +585,83 @@
         )
       ));
 
+      app.appendChild(el('div', { class: 'card', id: 'deviceCard' },
+        el('div', { class: 'section-title' }, '端末の承認（この端末リストにある端末だけが打刻・申請できます）'),
+        el('div', { id: 'deviceList' }, el('div', { class: 'empty' }, '読み込み中...'))
+      ));
+
       loadAdminCalendar();
+      loadDevices();
+    }
+
+    async function loadDevices() {
+      const box = document.getElementById('deviceList');
+      if (!box) return;
+      try {
+        const res = await apiCall('listDevices');
+        renderDevices((res && res.devices) || []);
+      } catch (err) {
+        box.innerHTML = '';
+        box.appendChild(el('div', { class: 'err' }, 'エラー: ' + err.message));
+      }
+    }
+
+    function renderDevices(devices) {
+      const box = document.getElementById('deviceList');
+      box.innerHTML = '';
+      if (!devices.length) {
+        box.appendChild(el('div', { class: 'empty' }, 'まだ登録申請された端末はありません'));
+        return;
+      }
+      // 承認待ちを上に
+      devices.sort(function (a, b) {
+        if (a.status === b.status) return 0;
+        return a.status === 'pending' ? -1 : 1;
+      });
+      for (const d of devices) {
+        const pending = d.status === 'pending';
+        const row = el('div', { class: 'modal-row', style: 'gap:10px' },
+          el('div', { style: 'flex:1;min-width:200px' },
+            el('div', { style: 'font-weight:600;font-size:14px;color:#0f172a' }, d.label || '(ラベルなし)'),
+            el('div', { style: 'font-size:11px;color:#94a3b8;margin-top:2px' },
+              '申請: ' + (d.applicant || '-') + '　' + (d.requestedAt || '') +
+              (d.approvedAt ? '　承認: ' + d.approvedAt : ''))
+          ),
+          el('span', {
+            style: 'font-size:12px;font-weight:700;padding:3px 10px;border-radius:4px;'
+              + (pending ? 'background:#fef3c7;color:#92400e' : 'background:#dcfce7;color:#166534')
+          }, pending ? '承認待ち' : '承認済み'),
+          pending
+            ? el('button', { class: 'btn-small btn-primary', onclick: (function (id) { return function () { approveDeviceUI(id); }; })(d.deviceId) }, '承認')
+            : null,
+          el('button', {
+            class: 'btn-small', style: 'color:#dc2626;border-color:#fca5a5',
+            onclick: (function (id, lbl) { return function () { revokeDeviceUI(id, lbl); }; })(d.deviceId, d.label)
+          }, '削除')
+        );
+        box.appendChild(row);
+      }
+    }
+
+    async function approveDeviceUI(deviceId) {
+      try {
+        await apiCall('approveDevice', { deviceId: deviceId });
+        toast('端末を承認しました');
+        loadDevices();
+      } catch (err) {
+        toast('エラー: ' + err.message);
+      }
+    }
+
+    async function revokeDeviceUI(deviceId, label) {
+      if (!confirm('この端末を削除しますか？\n' + (label || deviceId) + '\n\n削除するとこの端末では打刻できなくなります（再度登録申請が必要）。')) return;
+      try {
+        await apiCall('revokeDevice', { deviceId: deviceId });
+        toast('端末を削除しました');
+        loadDevices();
+      } catch (err) {
+        toast('エラー: ' + err.message);
+      }
     }
 
     function shiftMonth(delta) {
