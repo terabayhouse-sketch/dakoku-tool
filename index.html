@@ -4,7 +4,11 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
   <title>東京ベイハウス 打刻</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%E2%8F%B0%3C/text%3E%3C/svg%3E">
+  <meta name="theme-color" content="#15803d">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="打刻">
+  <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
   <style>
     *{box-sizing:border-box;margin:0;padding:0}
     body{
@@ -163,6 +167,7 @@
     .cell-row{display:flex;align-items:center;gap:4px;font-size:11px;line-height:1.2;padding:2px 5px;border-radius:3px}
     .cell-name{font-weight:700;color:#475569;width:14px;flex-shrink:0}
     .cell-stat{font-size:10px;font-weight:600}
+    .cell-times{font-size:9px;color:#475569;margin-left:auto;font-variant-numeric:tabular-nums;white-space:nowrap}
     .stat-in{background:#dcfce7;color:#166534}
     .stat-ongoing{background:#fef9c3;color:#854d0e}
     .stat-incomplete{background:#fef3c7;color:#92400e;border:1px dashed #f59e0b}
@@ -196,6 +201,33 @@
 
     // URL パラメータから ?u=koto|eri|watanabe|admin を取得
     const USER_KEY = (new URLSearchParams(location.search).get('u') || '').toLowerCase();
+
+    // === PWA マニフェストを動的生成 ===
+    // 静的 manifest.json だと start_url が固定になり、インストール後に ?u= が消えて
+    // 「URLパラメータが指定されていません」になる。開いている本人のURLを start_url に
+    // 焼き込むため、Blob で都度生成して link[rel=manifest] に差し込む。
+    (function () {
+      try {
+        const startUrl = location.href.split('#')[0];
+        const manifest = {
+          name: '東京ベイハウス 打刻',
+          short_name: '打刻',
+          start_url: startUrl,
+          scope: new URL('./', location.href).href,
+          display: 'standalone',
+          background_color: '#15803d',
+          theme_color: '#15803d',
+          icons: [
+            { src: new URL('icon-192.png', location.href).href, sizes: '192x192', type: 'image/png', purpose: 'any maskable' }
+          ]
+        };
+        const blob = new Blob([JSON.stringify(manifest)], { type: 'application/json' });
+        const link = document.createElement('link');
+        link.rel = 'manifest';
+        link.setAttribute('href', URL.createObjectURL(blob));
+        document.head.appendChild(link);
+      } catch (e) { /* マニフェスト生成失敗は致命ではない */ }
+    })();
 
     let ME = null;
     let TICK = null;
@@ -694,6 +726,16 @@
       return 'none';
     }
     function statusLabel(s) { return s || '・'; }
+    // マス内に出す打刻時刻「9:00-18:02」。出勤のみなら「9:00-」、打刻なしは空
+    function punchRange(punches) {
+      if (!punches || punches.length === 0) return '';
+      const ins = punches.filter(function (p) { return p.type === '出勤'; });
+      const outs = punches.filter(function (p) { return p.type === '退勤'; });
+      const inT = ins.length ? ins[0].time : '';
+      const outT = outs.length ? outs[outs.length - 1].time : '';
+      if (!inT && !outT) return '';
+      return inT + '-' + outT;
+    }
 
     function renderCalendar(data) {
       const sumRow = document.getElementById('sumRow');
@@ -792,7 +834,8 @@
           const st = c.statuses[m.email];
           stack.appendChild(el('div', { class: 'cell-row stat-' + statusClass(st) },
             el('span', { class: 'cell-name' }, m.name.charAt(0)),
-            el('span', { class: 'cell-stat' }, statusLabel(st))
+            el('span', { class: 'cell-stat' }, statusLabel(st)),
+            el('span', { class: 'cell-times' }, punchRange(c.punches && c.punches[m.email]))
           ));
         }
         cell.appendChild(stack);
