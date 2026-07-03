@@ -173,6 +173,7 @@
     .stat-incomplete{background:#fef3c7;color:#92400e;border:1px dashed #f59e0b}
     .stat-paid{background:#dbeafe;color:#1e40af}
     .stat-special{background:#ede9fe;color:#5b21b6}
+    .stat-pending{background:#fef9c3;color:#854d0e;border:1px dashed #eab308}
     .stat-absent{background:#fee2e2;color:#991b1b}
     .stat-none{color:#cbd5e1;background:transparent}
 
@@ -568,7 +569,7 @@
         const res = await apiCall('requestLeave', { type: type, dateStr: dateStr, deviceId: getDeviceId() });
         const m = document.getElementById('leaveModal');
         if (m) m.remove();
-        toast(res.dateStr + ' の' + res.type + 'を申請しました');
+        toast(res.dateStr + ' の' + res.type + 'を申請しました。承認をお待ちください');
       } catch (err) {
         toast('エラー: ' + friendlyErr(err.message));
         if (err.message && err.message.indexOf('DEVICE_NOT_APPROVED') >= 0) checkDeviceGate();
@@ -617,13 +618,85 @@
         )
       ));
 
+      app.appendChild(el('div', { class: 'card', id: 'leaveReqCard' },
+        el('div', { class: 'section-title' }, '休暇申請の承認（承認するとtokyoカレンダー＝各社員のカレンダーに反映されます）'),
+        el('div', { id: 'leaveReqList' }, el('div', { class: 'empty' }, '読み込み中...'))
+      ));
+
       app.appendChild(el('div', { class: 'card', id: 'deviceCard' },
         el('div', { class: 'section-title' }, '端末の承認（この端末リストにある端末だけが打刻・申請できます）'),
         el('div', { id: 'deviceList' }, el('div', { class: 'empty' }, '読み込み中...'))
       ));
 
       loadAdminCalendar();
+      loadLeaveRequests();
       loadDevices();
+    }
+
+    async function loadLeaveRequests() {
+      const box = document.getElementById('leaveReqList');
+      if (!box) return;
+      try {
+        const res = await apiCall('listLeaveRequests');
+        renderLeaveRequests((res && res.requests) || []);
+      } catch (err) {
+        box.innerHTML = '';
+        box.appendChild(el('div', { class: 'err' }, 'エラー: ' + err.message));
+      }
+    }
+
+    function renderLeaveRequests(requests) {
+      const box = document.getElementById('leaveReqList');
+      box.innerHTML = '';
+      if (!requests.length) {
+        box.appendChild(el('div', { class: 'empty' }, '承認待ちの休暇申請はありません'));
+        return;
+      }
+      for (const q of requests) {
+        const row = el('div', { class: 'modal-row', style: 'gap:10px' },
+          el('div', { style: 'flex:1;min-width:200px' },
+            el('div', { style: 'font-weight:600;font-size:14px;color:#0f172a' },
+              q.name + '　' + q.type + '　' + q.dateStr),
+            el('div', { style: 'font-size:11px;color:#94a3b8;margin-top:2px' },
+              '申請: ' + (q.requestedAt || ''))
+          ),
+          el('span', {
+            style: 'font-size:12px;font-weight:700;padding:3px 10px;border-radius:4px;background:#fef3c7;color:#92400e'
+          }, '承認待ち'),
+          el('button', {
+            class: 'btn-small btn-primary',
+            onclick: (function (em, ds) { return function () { approveLeaveUI(em, ds); }; })(q.email, q.dateStr)
+          }, '承認'),
+          el('button', {
+            class: 'btn-small', style: 'color:#dc2626;border-color:#fca5a5',
+            onclick: (function (em, ds, nm, ty) { return function () { rejectLeaveUI(em, ds, nm, ty); }; })(q.email, q.dateStr, q.name, q.type)
+          }, '却下')
+        );
+        box.appendChild(row);
+      }
+    }
+
+    async function approveLeaveUI(email, dateStr) {
+      try {
+        const res = await apiCall('approveLeave', { email: email, dateStr: dateStr });
+        toast((res.name || '') + 'さんの' + (res.type || '') + 'を承認しました（カレンダー反映）');
+        loadLeaveRequests();
+        loadAdminCalendar();
+      } catch (err) {
+        toast('エラー: ' + err.message);
+      }
+    }
+
+    async function rejectLeaveUI(email, dateStr, name, type) {
+      if (!confirm(name + 'さんの ' + dateStr + ' の' + type + '申請を却下しますか？\n\n却下すると申請は取り消され、カレンダーには載りません。')) return;
+      try {
+        await apiCall('rejectLeave', { email: email, dateStr: dateStr });
+        toast('申請を却下しました');
+        loadLeaveRequests();
+        loadAdminCalendar();
+      } catch (err) {
+        toast('エラー: ' + err.message);
+      }
     }
 
     async function loadDevices() {
@@ -723,9 +796,14 @@
       if (s === '有給') return 'paid';
       if (s === '特休') return 'special';
       if (s === '欠勤') return 'absent';
+      if (s && s.indexOf('申請中') >= 0) return 'pending';
       return 'none';
     }
-    function statusLabel(s) { return s || '・'; }
+    // 承認待ちは「有給申」「特休申」と短く表示
+    function statusLabel(s) {
+      if (s && s.indexOf('申請中') >= 0) return s.replace('申請中', '') + '申';
+      return s || '・';
+    }
     // マス内に出す打刻時刻「9:00-18:02」。出勤のみなら「9:00-」、打刻なしは空
     function punchRange(punches) {
       if (!punches || punches.length === 0) return '';
