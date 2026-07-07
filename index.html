@@ -308,14 +308,37 @@
       setTimeout(function () { t.classList.remove('show'); }, 2500);
     }
 
+    // メンバー表はフロントにも持つ（getMe の往復を待たずに即描画するため。正はGAS側）
+    const LOCAL_MEMBERS = {
+      koto: { name: '古東', role: 'member' },
+      eri: { name: '小堀', role: 'member' },
+      watanabe: { name: '渡辺', role: 'member' },
+      admin: { name: '寺島', role: 'admin' }
+    };
+
     async function renderApp() {
+      const lm = LOCAL_MEMBERS[USER_KEY];
+      if (!lm) return renderUnauthorized(USER_KEY);
+      // 即描画 → 裏で bootMember 1往復（従来は getMe を待ってから更に3往復）
+      ME = { ok: true, key: USER_KEY, name: lm.name, role: lm.role };
+      renderMember();
+    }
+
+    // 初期表示データを1往復でまとめて取得
+    async function bootLoad() {
       try {
-        const me = await apiCall('getMe');
-        ME = me;
-        if (!me.ok) return renderUnauthorized(me.key);
-        renderMember();
+        const b = await apiCall('bootMember', { deviceId: getDeviceId() });
+        if (!b || !b.ok) return renderUnauthorized(USER_KEY);
+        ME = b.me;
+        renderToday(b.today);
+        renderBalance(b.balance);
+        DEVICE_STATUS = (ME.role === 'admin') ? 'approved' : ((b.device && b.device.status) || 'none');
+        applyDeviceGate();
       } catch (err) {
-        renderError(err.message);
+        // バッチが失敗したら従来の個別呼び出しにフォールバック
+        loadMyToday();
+        loadBalance();
+        checkDeviceGate();
       }
     }
 
@@ -387,9 +410,7 @@
           el('li', { class: 'empty' }, '読み込み中...')
         )
       ));
-      loadMyToday();
-      loadBalance();
-      checkDeviceGate();
+      bootLoad();
 
       if (ME.role === 'admin') {
         app.appendChild(el('div', { class: 'center' },
@@ -398,14 +419,17 @@
       }
     }
 
+    function renderBalance(b) {
+      if (!b || !b.ok) return;
+      const p = document.getElementById('balPaid');
+      const s = document.getElementById('balSpecial');
+      if (p) p.textContent = String(b.paid) + '日';
+      if (s) s.textContent = String(b.special) + '日';
+    }
+
     async function loadBalance() {
       try {
-        const b = await apiCall('getMyBalance');
-        if (!b || !b.ok) return;
-        const p = document.getElementById('balPaid');
-        const s = document.getElementById('balSpecial');
-        if (p) p.textContent = String(b.paid) + '日';
-        if (s) s.textContent = String(b.special) + '日';
+        renderBalance(await apiCall('getMyBalance'));
       } catch (err) { console.error(err); }
     }
 
@@ -486,23 +510,26 @@
       return msg;
     }
 
+    function renderToday(res) {
+      const list = document.getElementById('stampList');
+      if (!list) return;
+      list.innerHTML = '';
+      if (!res || !res.ok || !res.records || res.records.length === 0) {
+        list.appendChild(el('li', { class: 'empty' }, 'まだ打刻がありません'));
+        return;
+      }
+      res.records.sort(function (a, b) { return a.time - b.time; });
+      for (const r of res.records) {
+        list.appendChild(el('li', { class: 'stamp-item' },
+          el('span', { class: 'stamp-time' }, r.timeText),
+          el('span', { class: 'stamp-badge ' + (r.type === '出勤' ? 'badge-in' : 'badge-out') }, r.type)
+        ));
+      }
+    }
+
     async function loadMyToday() {
       try {
-        const res = await apiCall('getMyToday');
-        const list = document.getElementById('stampList');
-        if (!list) return;
-        list.innerHTML = '';
-        if (!res || !res.ok || !res.records || res.records.length === 0) {
-          list.appendChild(el('li', { class: 'empty' }, 'まだ打刻がありません'));
-          return;
-        }
-        res.records.sort(function (a, b) { return a.time - b.time; });
-        for (const r of res.records) {
-          list.appendChild(el('li', { class: 'stamp-item' },
-            el('span', { class: 'stamp-time' }, r.timeText),
-            el('span', { class: 'stamp-badge ' + (r.type === '出勤' ? 'badge-in' : 'badge-out') }, r.type)
-          ));
-        }
+        renderToday(await apiCall('getMyToday'));
       } catch (err) {
         console.error(err);
       }
@@ -628,9 +655,24 @@
         el('div', { id: 'deviceList' }, el('div', { class: 'empty' }, '読み込み中...'))
       ));
 
-      loadAdminCalendar();
-      loadLeaveRequests();
-      loadDevices();
+      bootAdminLoad();
+    }
+
+    // 管理画面の初期表示を1往復で取得（従来はカレンダー・休暇申請・端末の3往復）
+    async function bootAdminLoad() {
+      const ymEl = document.getElementById('ymPicker');
+      try {
+        const b = await apiCall('bootAdmin', { ym: ymEl ? ymEl.value : '' });
+        CAL_DATA = b.cal;
+        renderCalendar(b.cal);
+        renderLeaveRequests(b.requests || []);
+        renderDevices(b.devices || []);
+      } catch (err) {
+        // バッチが失敗したら従来の個別呼び出しにフォールバック
+        loadAdminCalendar();
+        loadLeaveRequests();
+        loadDevices();
+      }
     }
 
     async function loadLeaveRequests() {
