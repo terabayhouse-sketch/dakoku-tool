@@ -950,10 +950,21 @@
         }, 'クリア'));
 
         const punches = cell.punches[m.email] || [];
-        if (punches.length > 0) {
-          const line = punches.map(function (p) { return p.type + ' ' + p.time; }).join(' / ');
-          row.appendChild(el('div', { class: 'punches-line' }, '打刻: ' + line));
-        }
+        const line = punches.length > 0
+          ? punches.map(function (p) { return p.type + ' ' + p.time; }).join(' / ')
+          : 'なし';
+        row.appendChild(el('div', { class: 'punches-line' },
+          '打刻: ' + line + '　',
+          el('button', {
+            class: 'btn-small', style: 'padding:2px 8px;font-size:11px',
+            onclick: (function (em, ds, nm) { return function () { adminAddPunchUI(em, ds, nm, '出勤'); }; })(m.email, dateStr, m.name)
+          }, '＋出勤打刻'),
+          ' ',
+          el('button', {
+            class: 'btn-small', style: 'padding:2px 8px;font-size:11px',
+            onclick: (function (em, ds, nm) { return function () { adminAddPunchUI(em, ds, nm, '退勤'); }; })(m.email, dateStr, m.name)
+          }, '＋退勤打刻')
+        ));
         body.appendChild(row);
       }
 
@@ -976,6 +987,23 @@
       try {
         await apiCall('setDayStatus', { email: email, dateStr: dateStr, status: status });
         toast('保存しました');
+        const m = document.getElementById('dayModal');
+        if (m) m.remove();
+        loadAdminCalendar();
+      } catch (err) {
+        toast('エラー: ' + err.message);
+      }
+    }
+
+    // 管理者が打刻（出勤/退勤）を手動追加（退勤押し忘れの補正など）
+    async function adminAddPunchUI(email, dateStr, name, type) {
+      const v = prompt(name + 'さんの ' + dateStr + ' の' + type + '時刻を入力（例 ' + (type === '出勤' ? '9:00' : '18:00') + '）');
+      if (v === null) return;
+      const t = v.trim();
+      if (!/^([01]?\d|2[0-3]):[0-5]\d$/.test(t)) { toast('時刻は「9:00」「18:30」の形式で入力してください'); return; }
+      try {
+        const res = await apiCall('adminAddPunch', { email: email, dateStr: dateStr, type: type, time: t });
+        toast(res.name + 'さん ' + res.dateStr + ' ' + res.type + ' ' + res.timeText + ' を追加しました');
         const m = document.getElementById('dayModal');
         if (m) m.remove();
         loadAdminCalendar();
