@@ -186,6 +186,11 @@
     .modal-name{font-weight:700;min-width:50px;font-size:14px;color:#0f172a}
     .modal-foot{display:flex;justify-content:flex-end;gap:8px}
     .punches-line{font-size:11px;color:#64748b;width:100%;margin-top:4px;padding-left:56px}
+    .punch-chip{display:inline-flex;align-items:center;gap:4px;background:#f1f5f9;border-radius:4px;padding:2px 6px}
+    .punch-mini{border:none;background:#e2e8f0;color:#334155;border-radius:3px;padding:1px 6px;font-size:10px;cursor:pointer}
+    .punch-mini:hover{background:#cbd5e1}
+    .punch-mini.danger{background:#fee2e2;color:#b91c1c}
+    .punch-mini.danger:hover{background:#fecaca}
   </style>
 </head>
 <body>
@@ -992,21 +997,37 @@
         }, 'クリア'));
 
         const punches = cell.punches[m.email] || [];
-        const line = punches.length > 0
-          ? punches.map(function (p) { return p.type + ' ' + p.time; }).join(' / ')
-          : 'なし';
-        row.appendChild(el('div', { class: 'punches-line' },
-          '打刻: ' + line + '　',
-          el('button', {
-            class: 'btn-small', style: 'padding:2px 8px;font-size:11px',
-            onclick: (function (em, ds, nm) { return function () { adminAddPunchUI(em, ds, nm, '出勤'); }; })(m.email, dateStr, m.name)
-          }, '＋出勤打刻'),
-          ' ',
-          el('button', {
-            class: 'btn-small', style: 'padding:2px 8px;font-size:11px',
-            onclick: (function (em, ds, nm) { return function () { adminAddPunchUI(em, ds, nm, '退勤'); }; })(m.email, dateStr, m.name)
-          }, '＋退勤打刻')
-        ));
+        const pLine = el('div', { class: 'punches-line' }, '打刻: ');
+        if (punches.length === 0) {
+          pLine.appendChild(el('span', { style: 'color:#94a3b8' }, 'なし'));
+        } else {
+          // 既存の打刻は1件ずつ「時刻を直す」「消す」できるようにする（重複打刻の解消・時刻の誤り訂正）
+          punches.forEach(function (p, i) {
+            if (i > 0) pLine.appendChild(document.createTextNode(' / '));
+            pLine.appendChild(el('span', { class: 'punch-chip' },
+              el('span', null, p.type + ' ' + p.time),
+              el('button', {
+                class: 'punch-mini', title: '時刻を直す',
+                onclick: (function (em, ds, nm, pp) { return function () { adminEditPunchUI(em, ds, nm, pp); }; })(m.email, dateStr, m.name, p)
+              }, '直す'),
+              el('button', {
+                class: 'punch-mini danger', title: 'この打刻を消す',
+                onclick: (function (em, ds, nm, pp) { return function () { adminDeletePunchUI(em, ds, nm, pp); }; })(m.email, dateStr, m.name, p)
+              }, '消す')
+            ));
+          });
+        }
+        pLine.appendChild(document.createTextNode('　'));
+        pLine.appendChild(el('button', {
+          class: 'btn-small', style: 'padding:2px 8px;font-size:11px',
+          onclick: (function (em, ds, nm) { return function () { adminAddPunchUI(em, ds, nm, '出勤'); }; })(m.email, dateStr, m.name)
+        }, '＋出勤打刻'));
+        pLine.appendChild(document.createTextNode(' '));
+        pLine.appendChild(el('button', {
+          class: 'btn-small', style: 'padding:2px 8px;font-size:11px',
+          onclick: (function (em, ds, nm) { return function () { adminAddPunchUI(em, ds, nm, '退勤'); }; })(m.email, dateStr, m.name)
+        }, '＋退勤打刻'));
+        row.appendChild(pLine);
         body.appendChild(row);
       }
 
@@ -1029,6 +1050,37 @@
       try {
         await apiCall('setDayStatus', { email: email, dateStr: dateStr, status: status });
         toast('保存しました');
+        const m = document.getElementById('dayModal');
+        if (m) m.remove();
+        loadAdminCalendar();
+      } catch (err) {
+        toast('エラー: ' + err.message);
+      }
+    }
+
+    // 既存打刻の時刻を修正
+    async function adminEditPunchUI(email, dateStr, name, p) {
+      const v = prompt(name + 'さん ' + dateStr + ' の「' + p.type + ' ' + p.time + '」を何時に直しますか？（例 9:00）', p.time);
+      if (v === null) return;
+      const t = v.trim();
+      if (!/^([01]?\d|2[0-3]):[0-5]\d$/.test(t)) { toast('時刻は「9:00」「18:30」の形式で入力してください'); return; }
+      try {
+        const res = await apiCall('adminEditPunch', { row: p.row, email: email, dateStr: dateStr, time: t });
+        toast(res.name + 'さん ' + res.type + ' ' + res.before + ' → ' + res.timeText + ' に修正しました');
+        const m = document.getElementById('dayModal');
+        if (m) m.remove();
+        loadAdminCalendar();
+      } catch (err) {
+        toast('エラー: ' + err.message);
+      }
+    }
+
+    // 既存打刻を削除（二重打刻の解消など）
+    async function adminDeletePunchUI(email, dateStr, name, p) {
+      if (!confirm(name + 'さん ' + dateStr + ' の「' + p.type + ' ' + p.time + '」を削除しますか？')) return;
+      try {
+        const res = await apiCall('adminDeletePunch', { row: p.row, email: email, dateStr: dateStr });
+        toast(res.name + 'さん ' + res.type + ' ' + res.timeText + ' を削除しました');
         const m = document.getElementById('dayModal');
         if (m) m.remove();
         loadAdminCalendar();
