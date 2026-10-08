@@ -25,6 +25,8 @@
     .title{font-size:16px;font-weight:700;color:#0f172a}
     .who{font-size:13px;color:#64748b}
     .who strong{color:#0f172a;font-size:15px;margin-left:6px}
+    .syncing{font-size:11px;color:#94a3b8;margin-left:10px;opacity:0;transition:opacity .25s;white-space:nowrap}
+    .syncing.show{opacity:1}
     .card{
       background:#fff;border-radius:12px;padding:24px;
       box-shadow:0 1px 3px rgba(0,0,0,.05);margin-bottom:16px;
@@ -239,23 +241,92 @@
     let TICK = null;
     let CAL_DATA = null;
     let DEVICE_STATUS = null; // 'approved' | 'pending' | 'none'（社員画面の端末制限用）
+    let TODAY_RECORDS = [];      // 社員画面「本日の打刻」の現在表示内容
+    let ADMIN_REQUESTS = [];     // 管理画面 休暇申請一覧の現在表示内容
+    let ADMIN_DEVICES = [];      // 管理画面 端末一覧の現在表示内容
+    let ADMIN_REFRESH_TIMER = null;
 
     // === API 呼び出し ===
     // 【CORS 対策】Content-Type: text/plain で送ることで preflight OPTIONS を回避。
     // application/json だとブラウザが preflight を投げ、GAS は OPTIONS に応えられず失敗する。
     // 内見予約フォーム bayhouse-yoyaku で実証済の bayhouse 標準パターン。
+    // 読み取り専用アクション（何度呼んでも結果が変わらない）。これらは GAS の一時的な 404/5xx を自動で再試行する。
+    // 書き込み系は二重登録（打刻が2回入る等）を避けるため再試行しない。
+    const READ_ONLY_ACTIONS = { ping: 1, getMe: 1, getMyToday: 1, getMyBalance: 1, getDeviceStatus: 1, getMembers: 1,
+      getCalendarMonth: 1, listLeaveRequests: 1, listDevices: 1, bootMember: 1, bootAdmin: 1 };
     async function apiCall(action, params) {
       const body = Object.assign({ action, u: USER_KEY }, params || {});
-      const res = await fetch(API_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: JSON.stringify(body),
-        redirect: 'follow'
-      });
-      if (!res.ok) throw new Error('HTTP ' + res.status);
-      const json = await res.json();
-      if (json && json.error) throw new Error(json.error);
-      return json;
+      const maxTry = READ_ONLY_ACTIONS[action] ? 3 : 1;
+      let lastErr = null;
+      for (let i = 0; i < maxTry; i++) {
+        try {
+          const res = await fetch(API_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+            body: JSON.stringify(body),
+            redirect: 'follow'
+          });
+          if (!res.ok) {
+            // GAS は実行自体は成功していても、応答の受け渡し(googleusercontent)で稀に 404/5xx を返す
+            const e = new Error('HTTP ' + res.status);
+            e.httpStatus = res.status;
+            throw e;
+          }
+          const json = await res.json();
+          if (json && json.error) throw new Error(json.error);
+          return json;
+        } catch (err) {
+          lastErr = err;
+          const transient = (err.httpStatus === 404 || err.httpStatus >= 500 || err instanceof TypeError);
+          if (!transient || i === maxTry - 1) break;
+          await new Promise(function (r) { setTimeout(r, 600 * (i + 1)); });
+        }
+      }
+      throw lastErr;
+    }
+    // 書き込みが HTTP エラーで終わったとき：実行済みの可能性があるので画面を最新に合わせ、利用者に案内する
+    function isTransientErr(err) {
+      return !!err && (err.httpStatus === 404 || err.httpStatus >= 500 || err instanceof TypeError);
+    }
+    function writeFailMsg(err) {
+      return isTransientErr(err)
+        ? '通信が不安定でした。反映されているか表示を更新して確認します'
+        : 'エラー: ' + friendlyErr(err.message);
+    }
+
+    // === 前回表示のローカルキャッシュ ===
+    // GAS は1往復に最低1〜2秒（冷えていると10秒）かかるので、前回取得した内容を端末に保存しておき、
+    // 開いた瞬間はそれを出して、裏で最新を取りに行って差し替える。正はあくまで GAS 側。
+    const CACHE_PREFIX = 'dakoku_cache_v1_';
+    function todayStr() {
+      const t = new Date();
+      return t.getFullYear() + '-' + pad(t.getMonth() + 1) + '-' + pad(t.getDate());
+    }
+    function cacheGet(key) {
+      try {
+        const raw = localStorage.getItem(CACHE_PREFIX + key);
+        if (!raw) return null;
+        const o = JSON.parse(raw);
+        return (o && o.data) ? o : null;
+      } catch (e) { return null; }
+    }
+    function cachePut(key, data) {
+      try {
+        localStorage.setItem(CACHE_PREFIX + key, JSON.stringify({ at: Date.now(), day: todayStr(), data: data }));
+      } catch (e) {}
+    }
+    // 社員画面キャッシュの一部だけ差し替え（打刻後・残取得後など）
+    function cacheMergeBoot(patch) {
+      const c = cacheGet('boot_' + USER_KEY);
+      const base = (c && c.data) ? c.data : { ok: true };
+      cachePut('boot_' + USER_KEY, Object.assign({}, base, patch));
+    }
+    // ヘッダ右の「更新中…」表示
+    let SYNCING_COUNT = 0;
+    function setSyncing(on) {
+      SYNCING_COUNT = Math.max(0, SYNCING_COUNT + (on ? 1 : -1));
+      const show = SYNCING_COUNT > 0;
+      document.querySelectorAll('.syncing').forEach(function (e) { e.classList.toggle('show', show); });
     }
 
     // 端末ID（初回に localStorage へ生成保存・以降は同じ）
@@ -301,6 +372,7 @@
       return e;
     }
     function pad(n) { return String(n).padStart(2, '0'); }
+    function toMin(hm) { const a = String(hm || '').split(':'); return (Number(a[0]) || 0) * 60 + (Number(a[1]) || 0); }
     function fmtClock(d) { return d.getHours() + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds()); }
     function fmtDate(d) {
       const days = ['日', '月', '火', '水', '木', '金', '土'];
@@ -331,6 +403,17 @@
 
     // 初期表示データを1往復でまとめて取得
     async function bootLoad() {
+      // ① 前回の内容があれば即表示（本日の打刻だけは同じ日のキャッシュに限る＝昨日の打刻を今日に出さない）
+      const cached = cacheGet('boot_' + USER_KEY);
+      if (cached) {
+        const c = cached.data;
+        if (cached.day === todayStr() && c.today) renderToday(c.today);
+        renderBalance(c.balance);
+        DEVICE_STATUS = (ME.role === 'admin') ? 'approved' : ((c.device && c.device.status) || 'none');
+        applyDeviceGate();
+      }
+      // ② 裏で最新を取得して差し替え
+      setSyncing(true);
       try {
         const b = await apiCall('bootMember', { deviceId: getDeviceId() });
         if (!b || !b.ok) return renderUnauthorized(USER_KEY);
@@ -339,11 +422,18 @@
         renderBalance(b.balance);
         DEVICE_STATUS = (ME.role === 'admin') ? 'approved' : ((b.device && b.device.status) || 'none');
         applyDeviceGate();
+        cachePut('boot_' + USER_KEY, b);
       } catch (err) {
-        // バッチが失敗したら従来の個別呼び出しにフォールバック
-        loadMyToday();
-        loadBalance();
-        checkDeviceGate();
+        if (cached) {
+          toast('最新を取得できませんでした。前回の表示です');
+        } else {
+          // キャッシュも無ければ従来の個別呼び出しにフォールバック
+          loadMyToday();
+          loadBalance();
+          checkDeviceGate();
+        }
+      } finally {
+        setSyncing(false);
       }
     }
 
@@ -375,6 +465,7 @@
         el('div', { class: 'title' }, '東京ベイハウス 打刻'),
         el('div', { class: 'who' },
           'ようこそ', el('strong', null, ME.name + 'さん'),
+          el('span', { class: 'syncing' }, '更新中…'),
           el('span', { class: 'balance-row', id: 'balanceRow' },
             el('span', { class: 'balance-cell' },
               el('span', { class: 'balance-label' }, '有給残'),
@@ -434,7 +525,9 @@
 
     async function loadBalance() {
       try {
-        renderBalance(await apiCall('getMyBalance'));
+        const r = await apiCall('getMyBalance');
+        renderBalance(r);
+        cacheMergeBoot({ balance: r });
       } catch (err) { console.error(err); }
     }
 
@@ -519,6 +612,7 @@
       const list = document.getElementById('stampList');
       if (!list) return;
       list.innerHTML = '';
+      TODAY_RECORDS = (res && res.ok && res.records) ? res.records.slice() : [];
       if (!res || !res.ok || !res.records || res.records.length === 0) {
         list.appendChild(el('li', { class: 'empty' }, 'まだ打刻がありません'));
         return;
@@ -534,7 +628,9 @@
 
     async function loadMyToday() {
       try {
-        renderToday(await apiCall('getMyToday'));
+        const r = await apiCall('getMyToday');
+        renderToday(r);
+        cacheMergeBoot({ today: r });
       } catch (err) {
         console.error(err);
       }
@@ -551,9 +647,14 @@
           uaSig: getUASig()
         });
         toast(res.timeText + ' ' + res.type + 'を記録しました');
+        // サーバーが記録済みの内容をそのまま一覧に足す（往復を待たない）。裏で照合だけ行う
+        const recs = TODAY_RECORDS.concat([{ time: Date.now(), timeText: res.timeText, type: res.type }]);
+        renderToday({ ok: true, records: recs });
+        cacheMergeBoot({ today: { ok: true, records: recs } });
         loadMyToday();
       } catch (err) {
-        toast('エラー: ' + friendlyErr(err.message));
+        toast(writeFailMsg(err));
+        if (isTransientErr(err)) loadMyToday();
         if (err.message && err.message.indexOf('DEVICE_NOT_APPROVED') >= 0) checkDeviceGate();
       } finally {
         btnIn.disabled = false; btnOut.disabled = false;
@@ -603,7 +704,7 @@
         if (m) m.remove();
         toast(res.dateStr + ' の' + res.type + 'を申請しました。承認をお待ちください');
       } catch (err) {
-        toast('エラー: ' + friendlyErr(err.message));
+        toast(isTransientErr(err) ? '通信が不安定でした。申請が届いているか寺島さんに確認してください' : 'エラー: ' + friendlyErr(err.message));
         if (err.message && err.message.indexOf('DEVICE_NOT_APPROVED') >= 0) checkDeviceGate();
       }
     }
@@ -616,7 +717,7 @@
       document.body.classList.add('admin-mode');
 
       app.appendChild(el('header', null,
-        el('div', { class: 'title' }, '打刻 管理画面'),
+        el('div', { class: 'title' }, '打刻 管理画面', el('span', { class: 'syncing' }, '更新中…')),
         el('a', { href: '#member', class: 'admin-link', style: 'margin:0', onclick: function (e) { e.preventDefault(); document.body.classList.remove('admin-mode'); renderMember(); } }, '← 自分の打刻に戻る')
       ));
 
@@ -624,7 +725,7 @@
       const thisYm = now.getFullYear() + '-' + pad(now.getMonth() + 1);
 
       const ymInput = el('input', { type: 'month', id: 'ymPicker', value: thisYm });
-      ymInput.addEventListener('change', loadAdminCalendar);
+      ymInput.addEventListener('change', function () { bootAdminLoad(); });
 
       app.appendChild(el('div', { class: 'card', id: 'summaryCard' },
         el('div', { class: 'cal-toolbar' },
@@ -664,20 +765,130 @@
     }
 
     // 管理画面の初期表示を1往復で取得（従来はカレンダー・休暇申請・端末の3往復）
-    async function bootAdminLoad() {
-      const ymEl = document.getElementById('ymPicker');
-      try {
-        const b = await apiCall('bootAdmin', { ym: ymEl ? ymEl.value : '' });
-        CAL_DATA = b.cal;
-        renderCalendar(b.cal);
-        renderLeaveRequests(b.requests || []);
-        renderDevices(b.devices || []);
-      } catch (err) {
-        // バッチが失敗したら従来の個別呼び出しにフォールバック
-        loadAdminCalendar();
-        loadLeaveRequests();
-        loadDevices();
+    function adminCacheKey(ym) { return 'admin_' + ym; }
+
+    // キャッシュした月データを「今日」の基準で整える（日付が変わっていても矛盾しないように）
+    function normalizeCachedCal(cal) {
+      const td = todayStr();
+      for (const c of cal.cells) {
+        if (c.blank) continue;
+        c.isToday = (c.dateStr === td);
+        for (const em in c.statuses) {
+          if (c.statuses[em] === '出勤中' && c.dateStr !== td) c.statuses[em] = '未完了';
+        }
       }
+      recountMembers(cal);
+      return cal;
+    }
+
+    function renderAdminAll(cal, requests, devices) {
+      CAL_DATA = cal;
+      ADMIN_REQUESTS = requests || [];
+      ADMIN_DEVICES = devices || [];
+      renderCalendar(cal);
+      renderLeaveRequests(ADMIN_REQUESTS);
+      renderDevices(ADMIN_DEVICES);
+    }
+
+    function saveAdminCache() {
+      if (!CAL_DATA) return;
+      cachePut(adminCacheKey(CAL_DATA.ym), { cal: CAL_DATA, requests: ADMIN_REQUESTS, devices: ADMIN_DEVICES });
+    }
+
+    async function bootAdminLoad(opts) {
+      const silent = !!(opts && opts.silent);
+      const ymEl = document.getElementById('ymPicker');
+      const ym = ymEl ? ymEl.value : '';
+      // ① 前回の内容があれば即表示
+      const cached = silent ? null : cacheGet(adminCacheKey(ym));
+      if (cached && cached.data.cal) {
+        renderAdminAll(normalizeCachedCal(cached.data.cal), cached.data.requests, cached.data.devices);
+      }
+      // ② 裏で最新を取得して差し替え
+      setSyncing(true);
+      try {
+        const b = await apiCall('bootAdmin', { ym: ym });
+        // 取得中に画面や月が切り替わっていたら捨てる
+        const nowYm = document.getElementById('ymPicker');
+        if (!nowYm || !document.getElementById('calBody') || nowYm.value !== ym) return;
+        renderAdminAll(b.cal, b.requests, b.devices);
+        saveAdminCache();
+      } catch (err) {
+        if (cached || silent) {
+          toast('最新を取得できませんでした' + (cached ? '。前回の表示です' : ''));
+        } else {
+          // キャッシュも無ければ従来の個別呼び出しにフォールバック
+          loadAdminCalendar();
+          loadLeaveRequests();
+          loadDevices();
+        }
+      } finally {
+        setSyncing(false);
+      }
+    }
+
+    // === 操作後は画面側で即反映し、全体の再取得は裏で1回だけ ===
+    function scheduleAdminRefresh() {
+      if (ADMIN_REFRESH_TIMER) clearTimeout(ADMIN_REFRESH_TIMER);
+      ADMIN_REFRESH_TIMER = setTimeout(function () {
+        ADMIN_REFRESH_TIMER = null;
+        if (document.getElementById('calBody')) bootAdminLoad({ silent: true });
+      }, 400);
+    }
+    // サーバー getCalendarMonth と同じ規則で月サマリーを数え直す
+    function recountMembers(cal) {
+      for (const m of cal.members) {
+        let w = 0, paid = 0, sp = 0, ab = 0, inc = 0;
+        for (const c of cal.cells) {
+          if (c.blank) continue;
+          const st = c.statuses[m.email];
+          if (st === '出勤') w++;
+          else if (st === '有給') paid++;
+          else if (st === '特休') sp++;
+          else if (st === '欠勤') ab++;
+          else if (st === '未完了') inc++;
+        }
+        m.workdays = w; m.paid = paid; m.special = sp; m.absent = ab; m.incomplete = inc;
+      }
+    }
+    // 打刻から 出勤/出勤中/未完了/null を導く（サーバーと同じ規則）
+    function derivePunchStatus(cell, em) {
+      const ps = (cell.punches && cell.punches[em]) || [];
+      const hasIn = ps.some(function (p) { return p.type === '出勤'; });
+      const hasOut = ps.some(function (p) { return p.type === '退勤'; });
+      const td = todayStr();
+      if (hasIn && hasOut) return '出勤';
+      if (hasIn && !hasOut && cell.dateStr === td) return '出勤中';
+      if ((hasIn || hasOut) && cell.dateStr < td) return '未完了';
+      return null;
+    }
+    // 有給/特休/欠勤/申請中 など「休暇シート由来」のステータスか（打刻由来より優先される）
+    function isLeaveStatus(st) {
+      return !!st && st !== '出勤' && st !== '出勤中' && st !== '未完了';
+    }
+    // 残日数の増減をサーバーの leaveBalanceTransition_ と同じ規則で画面にも反映
+    function shiftBalanceLocal(em, prevStatus, newStatus) {
+      if (!CAL_DATA) return;
+      const m = CAL_DATA.members.find(function (x) { return x.email === em; });
+      if (!m) return;
+      m.balance = (Number(m.balance) || 0) + (prevStatus === '有給' ? 1 : 0) - (newStatus === '有給' ? 1 : 0);
+      m.specialBalance = (Number(m.specialBalance) || 0) + (prevStatus === '特休' ? 1 : 0) - (newStatus === '特休' ? 1 : 0);
+    }
+    function findCell(dateStr) {
+      if (!CAL_DATA) return null;
+      return CAL_DATA.cells.find(function (c) { return !c.blank && c.dateStr === dateStr; }) || null;
+    }
+    // CAL_DATA を書き換えて即再描画 → キャッシュ保存 → 裏で照合
+    function applyAdminLocal(mutator) {
+      if (CAL_DATA) {
+        try { mutator(CAL_DATA); } catch (e) { console.error(e); }
+        recountMembers(CAL_DATA);
+        renderCalendar(CAL_DATA);
+        renderLeaveRequests(ADMIN_REQUESTS);
+        renderDevices(ADMIN_DEVICES);
+        saveAdminCache();
+      }
+      scheduleAdminRefresh();
     }
 
     async function loadLeaveRequests() {
@@ -694,6 +905,8 @@
 
     function renderLeaveRequests(requests) {
       const box = document.getElementById('leaveReqList');
+      if (!box) return;
+      ADMIN_REQUESTS = requests;
       box.innerHTML = '';
       if (!requests.length) {
         box.appendChild(el('div', { class: 'empty' }, '承認待ちの休暇申請はありません'));
@@ -727,10 +940,18 @@
       try {
         const res = await apiCall('approveLeave', { email: email, dateStr: dateStr });
         toast((res.name || '') + 'さんの' + (res.type || '') + 'を承認しました（カレンダー反映）');
-        loadLeaveRequests();
-        loadAdminCalendar();
+        applyAdminLocal(function () {
+          ADMIN_REQUESTS = ADMIN_REQUESTS.filter(function (q) { return !(q.email === email && q.dateStr === dateStr); });
+          const cell = findCell(dateStr);
+          if (cell && res.type) {
+            const prev = cell.statuses[email];
+            cell.statuses[email] = res.type;
+            shiftBalanceLocal(email, prev, res.type);
+          }
+        });
       } catch (err) {
-        toast('エラー: ' + err.message);
+        toast(writeFailMsg(err));
+        if (isTransientErr(err)) scheduleAdminRefresh();
       }
     }
 
@@ -739,10 +960,18 @@
       try {
         await apiCall('rejectLeave', { email: email, dateStr: dateStr });
         toast('申請を却下しました');
-        loadLeaveRequests();
-        loadAdminCalendar();
+        applyAdminLocal(function () {
+          ADMIN_REQUESTS = ADMIN_REQUESTS.filter(function (q) { return !(q.email === email && q.dateStr === dateStr); });
+          const cell = findCell(dateStr);
+          if (cell) {
+            const prev = cell.statuses[email];
+            cell.statuses[email] = derivePunchStatus(cell, email);
+            shiftBalanceLocal(email, prev, '');
+          }
+        });
       } catch (err) {
-        toast('エラー: ' + err.message);
+        toast(writeFailMsg(err));
+        if (isTransientErr(err)) scheduleAdminRefresh();
       }
     }
 
@@ -760,6 +989,8 @@
 
     function renderDevices(devices) {
       const box = document.getElementById('deviceList');
+      if (!box) return;
+      ADMIN_DEVICES = devices;
       box.innerHTML = '';
       if (!devices.length) {
         box.appendChild(el('div', { class: 'empty' }, 'まだ登録申請された端末はありません'));
@@ -799,9 +1030,12 @@
       try {
         await apiCall('approveDevice', { deviceId: deviceId });
         toast('端末を承認しました');
-        loadDevices();
+        applyAdminLocal(function () {
+          ADMIN_DEVICES.forEach(function (d) { if (d.deviceId === deviceId) d.status = 'approved'; });
+        });
       } catch (err) {
-        toast('エラー: ' + err.message);
+        toast(writeFailMsg(err));
+        if (isTransientErr(err)) scheduleAdminRefresh();
       }
     }
 
@@ -810,9 +1044,12 @@
       try {
         await apiCall('revokeDevice', { deviceId: deviceId });
         toast('端末を削除しました');
-        loadDevices();
+        applyAdminLocal(function () {
+          ADMIN_DEVICES = ADMIN_DEVICES.filter(function (d) { return d.deviceId !== deviceId; });
+        });
       } catch (err) {
-        toast('エラー: ' + err.message);
+        toast(writeFailMsg(err));
+        if (isTransientErr(err)) scheduleAdminRefresh();
       }
     }
 
@@ -822,7 +1059,7 @@
       const m = Number(ym.substring(5, 7));
       const d = new Date(y, m - 1 + delta, 1);
       document.getElementById('ymPicker').value = d.getFullYear() + '-' + pad(d.getMonth() + 1);
-      loadAdminCalendar();
+      bootAdminLoad();
     }
 
     async function loadAdminCalendar() {
@@ -831,8 +1068,10 @@
         const data = await apiCall('getCalendarMonth', { yearMonth: ym });
         CAL_DATA = data;
         renderCalendar(data);
+        saveAdminCache();
       } catch (err) {
-        toast('エラー: ' + err.message);
+        toast(writeFailMsg(err));
+        if (isTransientErr(err)) scheduleAdminRefresh();
       }
     }
 
@@ -1052,9 +1291,18 @@
         toast('保存しました');
         const m = document.getElementById('dayModal');
         if (m) m.remove();
-        loadAdminCalendar();
+        applyAdminLocal(function () {
+          const cell = findCell(dateStr);
+          if (!cell) return;
+          const prev = cell.statuses[email];
+          // サーバーは ''/'出勤' を「休暇記録の削除」として扱い、表示は打刻から導かれる
+          const next = (status === '' || status === '出勤') ? derivePunchStatus(cell, email) : status;
+          cell.statuses[email] = next;
+          shiftBalanceLocal(email, prev, next);
+        });
       } catch (err) {
-        toast('エラー: ' + err.message);
+        toast(writeFailMsg(err));
+        if (isTransientErr(err)) scheduleAdminRefresh();
       }
     }
 
@@ -1064,28 +1312,48 @@
       if (v === null) return;
       const t = v.trim();
       if (!/^([01]?\d|2[0-3]):[0-5]\d$/.test(t)) { toast('時刻は「9:00」「18:30」の形式で入力してください'); return; }
+      if (p.row == null) { toast('直前の追加を反映中です。少し待ってからもう一度お試しください'); return; }
       try {
         const res = await apiCall('adminEditPunch', { row: p.row, email: email, dateStr: dateStr, time: t });
         toast(res.name + 'さん ' + res.type + ' ' + res.before + ' → ' + res.timeText + ' に修正しました');
         const m = document.getElementById('dayModal');
         if (m) m.remove();
-        loadAdminCalendar();
+        applyAdminLocal(function () {
+          p.time = res.timeText;
+          const cell = findCell(dateStr);
+          if (cell && cell.punches[email]) cell.punches[email].sort(function (a, b) { return toMin(a.time) - toMin(b.time); });
+        });
       } catch (err) {
-        toast('エラー: ' + err.message);
+        toast(writeFailMsg(err));
+        if (isTransientErr(err)) scheduleAdminRefresh();
       }
     }
 
     // 既存打刻を削除（二重打刻の解消など）
     async function adminDeletePunchUI(email, dateStr, name, p) {
       if (!confirm(name + 'さん ' + dateStr + ' の「' + p.type + ' ' + p.time + '」を削除しますか？')) return;
+      if (p.row == null) { toast('直前の追加を反映中です。少し待ってからもう一度お試しください'); return; }
       try {
         const res = await apiCall('adminDeletePunch', { row: p.row, email: email, dateStr: dateStr });
         toast(res.name + 'さん ' + res.type + ' ' + res.timeText + ' を削除しました');
         const m = document.getElementById('dayModal');
         if (m) m.remove();
-        loadAdminCalendar();
+        applyAdminLocal(function (cal) {
+          const delRow = p.row;
+          const cell = findCell(dateStr);
+          if (cell && cell.punches[email]) {
+            cell.punches[email] = cell.punches[email].filter(function (x) { return x !== p; });
+            if (!isLeaveStatus(cell.statuses[email])) cell.statuses[email] = derivePunchStatus(cell, email);
+          }
+          // 打刻シートの行削除で後続行は1つ上がる（サーバーの deleteRow と同じ）
+          for (const c of cal.cells) {
+            if (c.blank || !c.punches) continue;
+            for (const em in c.punches) for (const x of c.punches[em]) { if (x.row != null && x.row > delRow) x.row -= 1; }
+          }
+        });
       } catch (err) {
-        toast('エラー: ' + err.message);
+        toast(writeFailMsg(err));
+        if (isTransientErr(err)) scheduleAdminRefresh();
       }
     }
 
@@ -1100,9 +1368,18 @@
         toast(res.name + 'さん ' + res.dateStr + ' ' + res.type + ' ' + res.timeText + ' を追加しました');
         const m = document.getElementById('dayModal');
         if (m) m.remove();
-        loadAdminCalendar();
+        applyAdminLocal(function () {
+          const cell = findCell(dateStr);
+          if (!cell) return;
+          if (!cell.punches[email]) cell.punches[email] = [];
+          // row はサーバー再取得で埋まる（それまで「直す/消す」は不可）
+          cell.punches[email].push({ type: res.type, time: res.timeText, row: null });
+          cell.punches[email].sort(function (a, b) { return toMin(a.time) - toMin(b.time); });
+          if (!isLeaveStatus(cell.statuses[email])) cell.statuses[email] = derivePunchStatus(cell, email);
+        });
       } catch (err) {
-        toast('エラー: ' + err.message);
+        toast(writeFailMsg(err));
+        if (isTransientErr(err)) scheduleAdminRefresh();
       }
     }
 
@@ -1116,9 +1393,13 @@
       try {
         await apiCall('setBalance', { email: email, days: Math.floor(n), target: t });
         toast(name + 'さん ' + label + '残' + Math.floor(n) + '日に設定');
-        loadAdminCalendar();
+        applyAdminLocal(function (cal) {
+          const m = cal.members.find(function (x) { return x.email === email; });
+          if (m) { if (t === 'special') m.specialBalance = Math.floor(n); else m.balance = Math.floor(n); }
+        });
       } catch (err) {
-        toast('エラー: ' + err.message);
+        toast(writeFailMsg(err));
+        if (isTransientErr(err)) scheduleAdminRefresh();
       }
     }
 
@@ -1127,9 +1408,13 @@
       try {
         const res = await apiCall('setBalanceDelta', { email: email, target: target, delta: delta });
         toast(name + 'さん ' + label + '残: ' + res.before + '日 → ' + res.after + '日');
-        loadAdminCalendar();
+        applyAdminLocal(function (cal) {
+          const m = cal.members.find(function (x) { return x.email === email; });
+          if (m) { if (target === 'special') m.specialBalance = res.after; else m.balance = res.after; }
+        });
       } catch (err) {
-        toast('エラー: ' + err.message);
+        toast(writeFailMsg(err));
+        if (isTransientErr(err)) scheduleAdminRefresh();
       }
     }
 
